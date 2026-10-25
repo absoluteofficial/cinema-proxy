@@ -6,56 +6,44 @@ module.exports = async (req, res) => {
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     let targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).send('URL required');
+    if (!targetUrl) return res.status(400).json({ status: 'error', message: 'URL required' });
     targetUrl = decodeURIComponent(targetUrl);
 
     try {
+        // Fetch the embed page HTML
         const response = await axios.get(targetUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Referer': 'https://morencius.com/',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
             }
         });
 
         let html = response.data;
 
-        // 1. Strip Known Ad Scripts (In-line and External)
-        const adKeywords = [
-            'popads', 'propellerads', 'adsterra', 'monetag', 'onclickads', 
-            'atOptions', 'window.open', 'clickadu', 'hilltopads', 'juicyads',
-            'exoclick', 'trafficjunky', 'banner', 'popunder'
-        ];
+        // Regex to find .m3u8 links (catches JWPlayer sources, eval scripts, etc.)
+        const m3u8Regex = /(https?:\/\/[^"']+?\.m3u8[^"']*)/gi;
+        const mp4Regex = /(https?:\/\/[^"']+?\.mp4[^"']*)/gi;
         
-        // Remove external scripts with these keywords in the URL
-        adKeywords.forEach(keyword => {
-            const regex = new RegExp(`<script[^>]*src=["'][^"']*${keyword}[^"']*["'][^>]*>.*?</script>`, 'gi');
-            html = html.replace(regex, '');
-        });
+        let match = html.match(m3u8Regex) || html.match(mp4Regex);
 
-        // Remove inline scripts containing these keywords
-        html = html.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gi, function(match, content) {
-            if (adKeywords.some(kw => content.toLowerCase().includes(kw))) {
-                return ''; // Strip the script
+        if (match && match.length > 0) {
+            // Clean up the URL (remove surrounding quotes if any)
+            let directUrl = match[0].replace(/["']/g, '');
+            
+            // If the URL is relative, make it absolute
+            if (directUrl.startsWith('/')) {
+                const urlObj = new URL(targetUrl);
+                directUrl = urlObj.origin + directUrl;
             }
-            return match;
-        });
+            
+            return res.status(200).json({ status: 'ok', url: directUrl });
+        }
 
-        // 2. Rewrite Relative URLs to Absolute (So CSS/JS/Images load correctly)
-        const urlObj = new URL(targetUrl);
-        const baseUrl = urlObj.origin;
-        
-        // Rewrite href and src attributes
-        html = html.replace(/(href|src)=["'](?!https?:\/\/|\/\/)([^"']+)["']/g, (match, attr, link) => {
-            return `${attr}="${baseUrl}/${link.replace(/^\//, '')}"`;
-        });
-
-        // 3. Send the cleaned HTML
-        res.setHeader('Content-Type', 'text/html');
-        res.send(html);
+        // If no direct link found, return error
+        return res.status(404).json({ status: 'error', message: 'No direct video found' });
 
     } catch (error) {
-        console.error('Proxy Error:', error.message);
-        res.status(500).send(`Backend Proxy Error: ${error.message}`);
+        return res.status(500).json({ status: 'error', message: error.message });
     }
 };
